@@ -1,0 +1,38 @@
+{
+  "name": "@drug-medicine-lookup/mobile",
+  "version": "1.0.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build:web": "expo export -p web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@drug-medicine-lookup/shared": "*",
+    "@react-native-async-storage/async-storage": "1.21.0",
+    "@react-navigation/native": "6.1.10",
+    "@react-navigation/native-stack": "6.9.18",
+    "expo": "50.0.6",
+    "expo-router": "3.4.6",
+    "expo-status-bar": "1.11.1",
+    "react": "18.2.0",
+    "react-native": "0.73.4",
+    "react-native-web": "0.19.10",
+    "zustand": "4.5.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.23.9",
+    "@testing-library/react-native": "12.4.3",
+    "@types/react": "18.2.55",
+    "@types/react-native": "0.73.0",
+    "fast-check": "3.15.0",
+    "typescript": "5.3.3",
+    "vitest": "1.2.2"
+  }
+}
