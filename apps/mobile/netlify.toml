@@ -5,7 +5,8 @@
 [build.environment]
   NODE_VERSION = "20"
 
-# SPA fallback: todas las rutas sirven index.html (necesario para expo-router)
+# Con output=static, expo-router genera archivos por ruta
+# El fallback a index.html maneja rutas no encontradas
 [[redirects]]
   from   = "/*"
   to     = "/index.html"
