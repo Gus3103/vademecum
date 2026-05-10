@@ -23,8 +23,15 @@ config.resolver.extraNodeModules = {
   '@drug-medicine-lookup/shared': path.resolve(workspaceRoot, 'packages/shared/src'),
 };
 
-// Fix: @supabase/supabase-js uses import.meta — tell Metro to treat it as ESM
+// Fix: Zustand uses import.meta.env.MODE — provide a polyfill via Metro globals
+config.transformer = {
+  ...config.transformer,
+  minifierConfig: {
+    ...config.transformer?.minifierConfig,
+  },
+};
+
+// Inject import.meta polyfill for web builds
 config.resolver.unstable_enablePackageExports = true;
-config.resolver.unstable_conditionNames = ['browser', 'require', 'default'];
 
 module.exports = config;
