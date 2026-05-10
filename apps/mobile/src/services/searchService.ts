@@ -1,138 +1,183 @@
 /**
- * Frontend search service.
- *
- * Wraps the API endpoints:
- *   GET /api/v1/medicines/search
- *   GET /api/v1/medicines/suggestions
- *
- * Uses fetchWithRetry for timeout + exponential backoff on 5xx errors.
- * Applies normalizeText to query params before sending (Req. 1.4).
+ * searchService — llama directo a Supabase (sin API Express intermedia).
+ * Requirements: 1.1, 1.2, 1.4, 2.1, 2.2
  */
 
-import type { SearchResult, FilterState } from '@drug-medicine-lookup/shared';
+import { supabase } from './supabaseClient';
 import { normalizeText } from '@drug-medicine-lookup/shared';
-import { API_BASE_URL, fetchWithRetry } from './apiClient';
+import type { Medicine, SearchResult, FilterState, ActiveIngredient, Presentation } from '@drug-medicine-lookup/shared';
 
-/**
- * Builds a URLSearchParams object from the common search parameters.
- */
-function buildSearchParams(
-  query: string,
-  type: 'active' | 'commercial',
-  filters?: FilterState,
-  page?: number,
-): URLSearchParams {
-  const params = new URLSearchParams();
-  params.set('q', normalizeText(query));
-  params.set('type', type);
-  if (page !== undefined) {
-    params.set('page', String(page));
+const PAGE_SIZE = 20;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async function fetchIngredients(medicineIds: string[]): Promise<Map<string, ActiveIngredient[]>> {
+  if (medicineIds.length === 0) return new Map();
+
+  const { data } = await supabase
+    .from('medicine_ingredients')
+    .select('medicine_id, active_ingredient_id, active_ingredients(id, name, synonyms)')
+    .in('medicine_id', medicineIds);
+
+  const map = new Map<string, ActiveIngredient[]>();
+  for (const row of (data ?? []) as unknown as Array<{
+    medicine_id: string;
+    active_ingredient_id: string;
+    active_ingredients: { id: string; name: string; synonyms: string[] | null } | null;
+  }>) {
+    const ai = row.active_ingredients;
+    if (!ai) continue;
+    const list = map.get(row.medicine_id) ?? [];
+    list.push({ id: ai.id, name: ai.name, synonyms: ai.synonyms ?? [] });
+    map.set(row.medicine_id, list);
   }
-  if (filters?.laboratory) {
-    params.set('lab', filters.laboratory);
-  }
-  if (filters?.pharmaceuticalForm) {
-    params.set('form', filters.pharmaceuticalForm);
-  }
-  if (filters?.requiresPrescription !== undefined) {
-    params.set('prescription', String(filters.requiresPrescription));
-  }
-  if (filters?.sortOrder) {
-    params.set('sort', filters.sortOrder);
-  }
-  return params;
+  return map;
 }
 
-/**
- * Searches medicines by active ingredient (principio activo).
- *
- * @param query   Search term (will be normalized before sending)
- * @param filters Optional filter/sort criteria
- * @param page    Page number (1-based, default: 1)
- * @returns       Paginated SearchResult
- */
+interface MedicineRow {
+  id: string;
+  commercial_name: string;
+  laboratory: string;
+  pharmaceutical_form: string;
+  requires_prescription: boolean;
+  presentations: Array<{ dose: string; units: string; quantity: number }> | null;
+}
+
+function rowToMedicine(row: MedicineRow, ingredients: ActiveIngredient[]): Medicine {
+  const presentations: Presentation[] = Array.isArray(row.presentations)
+    ? row.presentations.map((p) => ({ dose: p.dose, units: p.units, quantity: p.quantity }))
+    : [];
+  return {
+    id: row.id,
+    commercialName: row.commercial_name,
+    laboratory: row.laboratory,
+    pharmaceuticalForm: row.pharmaceutical_form,
+    requiresPrescription: row.requires_prescription,
+    presentations,
+    activeIngredients: ingredients,
+  };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
 export async function searchByActiveIngredient(
   query: string,
-  filters?: FilterState,
-  page?: number,
+  filters: FilterState = {},
+  page = 1,
 ): Promise<SearchResult> {
-  const params = buildSearchParams(query, 'active', filters, page);
-  const url = `${API_BASE_URL}/api/v1/medicines/search?${params.toString()}`;
+  const term = normalizeText(query);
 
-  const response = await fetchWithRetry(url);
+  // Find matching ingredient IDs
+  const { data: aiData } = await supabase
+    .from('active_ingredients')
+    .select('id')
+    .ilike('name_normalized', `%${term}%`);
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw Object.assign(
-      new Error((body as { message?: string }).message ?? `HTTP ${response.status}`),
-      { status: response.status, body },
-    );
+  const ingredientIds = ((aiData ?? []) as Array<{ id: string }>).map((r) => r.id);
+  if (ingredientIds.length === 0) {
+    return { medicines: [], total: 0, page, pageSize: PAGE_SIZE, totalPages: 0 };
   }
 
-  return response.json() as Promise<SearchResult>;
+  // Find medicine IDs linked to those ingredients
+  const { data: linkData } = await supabase
+    .from('medicine_ingredients')
+    .select('medicine_id')
+    .in('active_ingredient_id', ingredientIds);
+
+  const medicineIds = [
+    ...new Set(((linkData ?? []) as Array<{ medicine_id: string }>).map((r) => r.medicine_id)),
+  ];
+  if (medicineIds.length === 0) {
+    return { medicines: [], total: 0, page, pageSize: PAGE_SIZE, totalPages: 0 };
+  }
+
+  const total = medicineIds.length;
+  const offset = (page - 1) * PAGE_SIZE;
+  const pageIds = medicineIds.slice(offset, offset + PAGE_SIZE);
+
+  // Build query with optional filters
+  let medQuery = supabase
+    .from('medicines')
+    .select('id, commercial_name, laboratory, pharmaceutical_form, requires_prescription, presentations')
+    .in('id', pageIds)
+    .order('commercial_name', { ascending: filters.sortOrder !== 'name_desc' });
+
+  if (filters.laboratory) medQuery = medQuery.eq('laboratory', filters.laboratory);
+  if (filters.pharmaceuticalForm) medQuery = medQuery.eq('pharmaceutical_form', filters.pharmaceuticalForm);
+  if (filters.requiresPrescription != null) medQuery = medQuery.eq('requires_prescription', filters.requiresPrescription);
+
+  const { data: medData, error } = await medQuery;
+  if (error) throw new Error(error.message);
+
+  const ingredientMap = await fetchIngredients(pageIds);
+  const medicines = ((medData ?? []) as MedicineRow[]).map((row) =>
+    rowToMedicine(row, ingredientMap.get(row.id) ?? []),
+  );
+
+  return { medicines, total, page, pageSize: PAGE_SIZE, totalPages: Math.ceil(total / PAGE_SIZE) };
 }
 
-/**
- * Searches medicines by commercial name (nombre comercial).
- *
- * @param query   Search term (will be normalized before sending)
- * @param filters Optional filter/sort criteria
- * @param page    Page number (1-based, default: 1)
- * @returns       Paginated SearchResult
- */
 export async function searchByCommercialName(
   query: string,
-  filters?: FilterState,
-  page?: number,
+  filters: FilterState = {},
+  page = 1,
 ): Promise<SearchResult> {
-  const params = buildSearchParams(query, 'commercial', filters, page);
-  const url = `${API_BASE_URL}/api/v1/medicines/search?${params.toString()}`;
+  const term = normalizeText(query);
+  const offset = (page - 1) * PAGE_SIZE;
 
-  const response = await fetchWithRetry(url);
+  // Count
+  let countQuery = supabase
+    .from('medicines')
+    .select('id', { count: 'exact', head: true })
+    .ilike('commercial_name_normalized', `%${term}%`);
+  if (filters.laboratory) countQuery = countQuery.eq('laboratory', filters.laboratory);
+  if (filters.pharmaceuticalForm) countQuery = countQuery.eq('pharmaceutical_form', filters.pharmaceuticalForm);
+  if (filters.requiresPrescription != null) countQuery = countQuery.eq('requires_prescription', filters.requiresPrescription);
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw Object.assign(
-      new Error((body as { message?: string }).message ?? `HTTP ${response.status}`),
-      { status: response.status, body },
-    );
-  }
+  const { count } = await countQuery;
+  const total = count ?? 0;
 
-  return response.json() as Promise<SearchResult>;
+  // Data
+  let dataQuery = supabase
+    .from('medicines')
+    .select('id, commercial_name, laboratory, pharmaceutical_form, requires_prescription, presentations')
+    .ilike('commercial_name_normalized', `%${term}%`)
+    .order('commercial_name', { ascending: filters.sortOrder !== 'name_desc' })
+    .range(offset, offset + PAGE_SIZE - 1);
+  if (filters.laboratory) dataQuery = dataQuery.eq('laboratory', filters.laboratory);
+  if (filters.pharmaceuticalForm) dataQuery = dataQuery.eq('pharmaceutical_form', filters.pharmaceuticalForm);
+  if (filters.requiresPrescription != null) dataQuery = dataQuery.eq('requires_prescription', filters.requiresPrescription);
+
+  const { data, error } = await dataQuery;
+  if (error) throw new Error(error.message);
+
+  const pageIds = ((data ?? []) as MedicineRow[]).map((r) => r.id);
+  const ingredientMap = await fetchIngredients(pageIds);
+  const medicines = ((data ?? []) as MedicineRow[]).map((row) =>
+    rowToMedicine(row, ingredientMap.get(row.id) ?? []),
+  );
+
+  return { medicines, total, page, pageSize: PAGE_SIZE, totalPages: Math.ceil(total / PAGE_SIZE) };
 }
 
-/**
- * Fetches autocomplete suggestions for a search term.
- *
- * @param query Search term (will be normalized before sending)
- * @param type  Whether to suggest active ingredients or commercial names
- * @returns     Array of suggestion strings
- */
-export async function getSuggestions(
-  query: string,
-  type: 'active' | 'commercial' = 'active',
-): Promise<string[]> {
-  const params = new URLSearchParams();
-  params.set('q', normalizeText(query));
-  params.set('type', type);
+export async function getSuggestions(query: string, type: 'active' | 'commercial'): Promise<string[]> {
+  const term = normalizeText(query);
 
-  const url = `${API_BASE_URL}/api/v1/medicines/suggestions?${params.toString()}`;
-
-  const response = await fetchWithRetry(url);
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw Object.assign(
-      new Error((body as { message?: string }).message ?? `HTTP ${response.status}`),
-      { status: response.status, body },
-    );
+  if (type === 'active') {
+    const { data } = await supabase
+      .from('active_ingredients')
+      .select('name')
+      .ilike('name_normalized', `%${term}%`)
+      .order('name')
+      .limit(10);
+    return ((data ?? []) as Array<{ name: string }>).map((r) => r.name);
   }
 
-  return response.json() as Promise<string[]>;
+  const { data } = await supabase
+    .from('medicines')
+    .select('commercial_name')
+    .ilike('commercial_name_normalized', `%${term}%`)
+    .order('commercial_name')
+    .limit(10);
+  return ((data ?? []) as Array<{ commercial_name: string }>).map((r) => r.commercial_name);
 }
-
-export const searchService = {
-  searchByActiveIngredient,
-  searchByCommercialName,
-  getSuggestions,
-};

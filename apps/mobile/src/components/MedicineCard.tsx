@@ -1,26 +1,14 @@
 /**
- * MedicineCard component.
- *
- * Displays a medicine's key information:
- *   - Commercial name (bold)
- *   - Active ingredients (comma-separated)
- *   - Laboratory
- *   - Presentations (dose + units)
- *
- * Accessible: descriptive accessibilityLabel.
- * Wraps in TouchableOpacity when onPress is provided.
- *
+ * MedicineCard — tarjeta rediseñada con ícono, condiciones y mejor estética.
  * Requirements: 2.4, 7.4
  */
 
 import React from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-} from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { Medicine } from '@drug-medicine-lookup/shared';
+import { MedicineIcon } from './MedicineIcon';
+import { ConditionTags } from './ConditionTags';
+import { Colors, Spacing, Radius, Typography, Shadow } from '../theme';
 
 interface MedicineCardProps {
   medicine: Medicine;
@@ -28,63 +16,69 @@ interface MedicineCardProps {
 }
 
 export function MedicineCard({ medicine, onPress }: MedicineCardProps) {
-  const activeIngredientNames = medicine.activeIngredients
-    .map((ai) => ai.name)
-    .join(', ');
+  const ingredientNames = medicine.activeIngredients.map((ai) => ai.name).join(' · ');
+  const presentations = medicine.presentations.map((p) => `${p.dose} ${p.units}`).join(' · ');
+  const allConditions = medicine.activeIngredients.flatMap((ai) => ai.conditions ?? []);
+  // Deduplicate conditions by id
+  const uniqueConditions = allConditions.filter(
+    (c, i, arr) => arr.findIndex((x) => x.id === c.id) === i,
+  );
 
-  const presentationLabels = medicine.presentations
-    .map((p) => `${p.dose} ${p.units}`)
-    .join(' · ');
-
-  const accessibilityLabel = [
-    medicine.commercialName,
-    activeIngredientNames,
-    medicine.laboratory,
-  ]
+  const a11yLabel = [medicine.commercialName, ingredientNames, medicine.laboratory]
     .filter(Boolean)
     .join(', ');
 
-  const cardContent = (
+  const content = (
     <View style={styles.card}>
-      {/* Commercial name */}
-      <Text style={styles.commercialName} numberOfLines={2}>
-        {medicine.commercialName}
-      </Text>
+      {/* Top row: icon + main info */}
+      <View style={styles.topRow}>
+        <MedicineIcon pharmaceuticalForm={medicine.pharmaceuticalForm} size={52} />
 
-      {/* Active ingredients */}
-      {activeIngredientNames.length > 0 && (
-        <Text style={styles.activeIngredients} numberOfLines={2}>
-          {activeIngredientNames}
-        </Text>
-      )}
-
-      {/* Laboratory */}
-      <Text style={styles.laboratory} numberOfLines={1}>
-        {medicine.laboratory}
-      </Text>
-
-      {/* Presentations */}
-      {presentationLabels.length > 0 && (
-        <Text style={styles.presentations} numberOfLines={2}>
-          {presentationLabels}
-        </Text>
-      )}
-
-      {/* Prescription badge */}
-      <View style={styles.badgeRow}>
-        <View
-          style={[
-            styles.prescriptionBadge,
-            medicine.requiresPrescription
-              ? styles.prescriptionRequired
-              : styles.prescriptionFree,
-          ]}
-        >
-          <Text style={styles.prescriptionText}>
-            {medicine.requiresPrescription ? 'Con receta' : 'Sin receta'}
+        <View style={styles.mainInfo}>
+          <Text style={styles.commercialName} numberOfLines={1}>
+            {medicine.commercialName}
           </Text>
+          {ingredientNames.length > 0 && (
+            <Text style={styles.ingredients} numberOfLines={2}>
+              {ingredientNames}
+            </Text>
+          )}
+          <View style={styles.metaRow}>
+            <Text style={styles.metaText}>🏭 {medicine.laboratory}</Text>
+            <View
+              style={[
+                styles.rxBadge,
+                medicine.requiresPrescription ? styles.rxRequired : styles.rxFree,
+              ]}
+            >
+              <Text style={[
+                styles.rxText,
+                { color: medicine.requiresPrescription ? Colors.warning : Colors.success },
+              ]}>
+                {medicine.requiresPrescription ? '📋 Con receta' : '✅ Sin receta'}
+              </Text>
+            </View>
+          </View>
         </View>
       </View>
+
+      {/* Presentations */}
+      {presentations.length > 0 && (
+        <View style={styles.presentationsRow}>
+          <Text style={styles.presentationsLabel}>Presentaciones: </Text>
+          <Text style={styles.presentationsValue} numberOfLines={1}>{presentations}</Text>
+        </View>
+      )}
+
+      {/* Conditions */}
+      {uniqueConditions.length > 0 && (
+        <ConditionTags conditions={uniqueConditions} maxVisible={3} />
+      )}
+
+      {/* Tap hint */}
+      {onPress && (
+        <Text style={styles.tapHint}>Ver prospecto →</Text>
+      )}
     </View>
   );
 
@@ -93,82 +87,93 @@ export function MedicineCard({ medicine, onPress }: MedicineCardProps) {
       <TouchableOpacity
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={accessibilityLabel}
-        accessibilityHint="Toca para ver el detalle del medicamento"
-        activeOpacity={0.7}
+        accessibilityLabel={a11yLabel}
+        accessibilityHint="Toca para ver el prospecto"
+        activeOpacity={0.75}
       >
-        {cardContent}
+        {content}
       </TouchableOpacity>
     );
   }
 
-  return (
-    <View
-      accessibilityRole="none"
-      accessibilityLabel={accessibilityLabel}
-    >
-      {cardContent}
-    </View>
-  );
+  return <View accessibilityLabel={a11yLabel}>{content}</View>;
 }
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#FFF',
-    borderRadius: 10,
-    padding: 16,
-    marginVertical: 6,
-    marginHorizontal: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
-    elevation: 2,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    marginVertical: Spacing.xs,
+    marginHorizontal: Spacing.md,
     borderWidth: 1,
-    borderColor: '#EFEFEF',
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  topRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  mainInfo: {
+    flex: 1,
+    gap: 3,
   },
   commercialName: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#1A1A2E',
-    marginBottom: 4,
+    ...Typography.h4,
+    color: Colors.textPrimary,
   },
-  activeIngredients: {
-    fontSize: 14,
-    color: '#555',
-    marginBottom: 4,
+  ingredients: {
+    ...Typography.small,
+    color: Colors.primary,
     fontStyle: 'italic',
   },
-  laboratory: {
-    fontSize: 13,
-    color: '#777',
-    marginBottom: 4,
-  },
-  presentations: {
-    fontSize: 13,
-    color: '#555',
-    marginBottom: 8,
-  },
-  badgeRow: {
+  metaRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 6,
+    gap: Spacing.xs,
+    marginTop: 2,
   },
-  prescriptionBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
+  metaText: {
+    ...Typography.tiny,
+    color: Colors.textSecondary,
   },
-  prescriptionRequired: {
-    backgroundColor: '#FFF3CD',
+  rxBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: Radius.full,
   },
-  prescriptionFree: {
-    backgroundColor: '#D4EDDA',
+  rxRequired: {
+    backgroundColor: Colors.warningLight,
   },
-  prescriptionText: {
-    fontSize: 12,
+  rxFree: {
+    backgroundColor: Colors.successLight,
+  },
+  rxText: {
+    fontSize: 11,
     fontWeight: '600',
-    color: '#555',
+  },
+  presentationsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.xs,
+  },
+  presentationsLabel: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+  },
+  presentationsValue: {
+    ...Typography.tiny,
+    color: Colors.textSecondary,
+    flex: 1,
+  },
+  tapHint: {
+    ...Typography.tiny,
+    color: Colors.primary,
+    textAlign: 'right',
+    marginTop: Spacing.xs,
+    fontWeight: '600',
   },
 });
 

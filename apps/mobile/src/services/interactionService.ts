@@ -1,48 +1,73 @@
 /**
- * Frontend interaction service.
- *
- * Wraps the API endpoint:
- *   POST /api/v1/interactions/check
- *
- * Uses fetchWithRetry for timeout + exponential backoff on 5xx errors.
+ * interactionService — llama directo a Supabase.
+ * Requirements: 4.1, 4.2, 4.3, 4.4
  */
 
-import type { InteractionResult } from '@drug-medicine-lookup/shared';
-import { API_BASE_URL, fetchWithRetry } from './apiClient';
+import { supabase } from './supabaseClient';
+import type { InteractionResult, DrugInteraction } from '@drug-medicine-lookup/shared';
 
-/**
- * Checks drug interactions for the given list of medicine IDs.
- *
- * When more than 5 medicines are provided, the API will set
- * `exceedsRecommendedLimit: true` in the response (Req. 4.4).
- *
- * @param medicineIds Array of medicine UUIDs to check
- * @returns           InteractionResult with interactions and metadata
- */
-export async function checkInteractions(
-  medicineIds: string[],
-): Promise<InteractionResult> {
-  const url = `${API_BASE_URL}/api/v1/interactions/check`;
+const RECOMMENDED_LIMIT = 5;
 
-  const response = await fetchWithRetry(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ medicineIds }),
-  });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw Object.assign(
-      new Error((body as { message?: string }).message ?? `HTTP ${response.status}`),
-      { status: response.status, body },
-    );
-  }
-
-  return response.json() as Promise<InteractionResult>;
+interface IngredientData {
+  id: string;
+  name: string;
+  synonyms: string[] | null;
 }
 
-export const interactionService = {
-  checkInteractions,
-};
+interface InteractionRow {
+  severity: 'leve' | 'moderada' | 'grave';
+  description: string;
+  ingredient_a: IngredientData | IngredientData[] | null;
+  ingredient_b: IngredientData | IngredientData[] | null;
+}
+
+function toIngredient(raw: IngredientData | IngredientData[] | null) {
+  const ai = Array.isArray(raw) ? raw[0] : raw;
+  if (!ai) return null;
+  return { id: ai.id, name: ai.name, synonyms: ai.synonyms ?? [] };
+}
+
+export async function checkInteractions(medicineIds: string[]): Promise<InteractionResult> {
+  const exceedsRecommendedLimit = medicineIds.length > RECOMMENDED_LIMIT;
+
+  // Get active ingredient IDs for all selected medicines
+  const { data: linkData } = await supabase
+    .from('medicine_ingredients')
+    .select('active_ingredient_id')
+    .in('medicine_id', medicineIds);
+
+  const ingredientIds = [
+    ...new Set(
+      ((linkData ?? []) as Array<{ active_ingredient_id: string }>).map((r) => r.active_ingredient_id),
+    ),
+  ];
+
+  if (ingredientIds.length === 0) {
+    return { interactions: [], hasInteractions: false, exceedsRecommendedLimit };
+  }
+
+  const { data, error } = await supabase
+    .from('drug_interactions')
+    .select(`
+      severity,
+      description,
+      ingredient_a:active_ingredients!ingredient_a_id(id, name, synonyms),
+      ingredient_b:active_ingredients!ingredient_b_id(id, name, synonyms)
+    `)
+    .or(`ingredient_a_id.in.(${ingredientIds.join(',')}),ingredient_b_id.in.(${ingredientIds.join(',')})`);
+
+  if (error) throw new Error(error.message);
+
+  const interactions: DrugInteraction[] = [];
+
+  for (const row of (data ?? []) as unknown as InteractionRow[]) {
+    const aiA = toIngredient(row.ingredient_a);
+    const aiB = toIngredient(row.ingredient_b);
+    if (!aiA || !aiB) continue;
+
+    interactions.push({ ingredientA: aiA, ingredientB: aiB, severity: row.severity, description: row.description });
+    interactions.push({ ingredientA: aiB, ingredientB: aiA, severity: row.severity, description: row.description });
+  }
+
+  return { interactions, hasInteractions: interactions.length > 0, exceedsRecommendedLimit };
+}

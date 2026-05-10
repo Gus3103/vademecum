@@ -1,38 +1,31 @@
 /**
- * Frontend prospect service.
- *
- * Wraps the API endpoint:
- *   GET /api/v1/medicines/:id/prospect
- *
- * Uses fetchWithRetry for timeout + exponential backoff on 5xx errors.
+ * prospectService — llama directo a Supabase.
+ * Requirements: 3.1, 3.2, 3.3
  */
 
+import { supabase } from './supabaseClient';
 import type { Prospect } from '@drug-medicine-lookup/shared';
-import { API_BASE_URL, fetchWithRetry } from './apiClient';
 
-/**
- * Fetches the full prospect (leaflet) for a given medicine.
- *
- * @param medicineId UUID of the medicine
- * @returns          Prospect data
- * @throws           Error with status 404 if the prospect is not available (PROSPECT_NOT_FOUND)
- */
 export async function getProspect(medicineId: string): Promise<Prospect> {
-  const url = `${API_BASE_URL}/api/v1/medicines/${encodeURIComponent(medicineId)}/prospect`;
+  const { data, error } = await supabase
+    .from('prospects')
+    .select('*')
+    .eq('medicine_id', medicineId)
+    .single();
 
-  const response = await fetchWithRetry(url);
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw Object.assign(
-      new Error((body as { message?: string }).message ?? `HTTP ${response.status}`),
-      { status: response.status, body },
-    );
+  if (error || !data) {
+    throw new Error('PROSPECT_NOT_FOUND');
   }
 
-  return response.json() as Promise<Prospect>;
+  return {
+    medicineId: data.medicine_id,
+    indications: data.indications ?? '',
+    dosage: data.dosage ?? '',
+    contraindications: data.contraindications ?? '',
+    warnings: data.warnings ?? '',
+    interactionsText: data.interactions_text ?? '',
+    adverseEffects: data.adverse_effects ?? '',
+    overdose: data.overdose ?? '',
+    storage: data.storage ?? '',
+  };
 }
-
-export const prospectService = {
-  getProspect,
-};

@@ -76,7 +76,6 @@ function buildOrderBy(filters: FilterState): string {
   if (filters.sortOrder === 'name_desc') {
     return 'ORDER BY m.commercial_name DESC';
   }
-  // Default: ascending
   return 'ORDER BY m.commercial_name ASC';
 }
 
@@ -91,8 +90,7 @@ function buildOrderBy(filters: FilterState): string {
  * pg-mem-backed pool without touching the singleton.
  *
  * Search queries use `ILIKE '%term%'` on the `*_normalized` columns.
- * This works in both real PostgreSQL (where pg_trgm GIN indexes accelerate
- * the query) and in pg-mem (which does not support pg_trgm).
+ * Uses JOIN instead of correlated EXISTS for pg-mem compatibility.
  */
 export class MedicineRepository {
   private readonly pool: Pool;
@@ -118,55 +116,39 @@ export class MedicineRepository {
     page: number,
   ): Promise<SearchResult> {
     const normalized = normalizeText(query);
-    const term = `%${normalized}%`;
+    const term = '%' + normalized + '%';
     const offset = (page - 1) * PAGE_SIZE;
 
-    // Build dynamic WHERE clauses for optional filters
+    // $1 = search term; filter params start at $2
     const { whereClauses, params } = buildFilterClauses(filters, [term]);
-    // $1 is always the search term
-    const searchParamIndex = 1;
-
-    const baseWhere = `
-      EXISTS (
-        SELECT 1
-        FROM medicine_ingredients mi
-        JOIN active_ingredients ai ON ai.id = mi.active_ingredient_id
-        WHERE mi.medicine_id = m.id
-          AND ai.name_normalized ILIKE $${searchParamIndex}
-      )
-      ${whereClauses.length > 0 ? 'AND ' + whereClauses.join(' AND ') : ''}
-    `;
+    const filterWhere =
+      whereClauses.length > 0 ? 'AND ' + whereClauses.join(' AND ') : '';
 
     const orderBy = buildOrderBy(filters);
+    const limitParam = '$' + String(params.length + 1);
+    const offsetParam = '$' + String(params.length + 2);
 
-    // Count query
-    const countSql = `
-      SELECT COUNT(DISTINCT m.id)::text AS count
-      FROM medicines m
-      WHERE ${baseWhere}
-    `;
+    const countSql =
+      'SELECT COUNT(DISTINCT m.id)::text AS count' +
+      ' FROM medicines m' +
+      ' JOIN medicine_ingredients mi ON mi.medicine_id = m.id' +
+      ' JOIN active_ingredients ai ON ai.id = mi.active_ingredient_id' +
+      ' WHERE ai.name_normalized ILIKE $1 ' + filterWhere;
 
-    // Data query — aggregate active ingredients per medicine
-    const dataSql = `
-      SELECT
-        m.id,
-        m.commercial_name,
-        m.laboratory,
-        m.pharmaceutical_form,
-        m.requires_prescription,
-        m.presentations,
-        array_agg(DISTINCT ai.id)    AS active_ingredient_ids,
-        array_agg(DISTINCT ai.name)  AS active_ingredient_names,
-        array_agg(ai.synonyms)       AS active_ingredient_synonyms
-      FROM medicines m
-      LEFT JOIN medicine_ingredients mi ON mi.medicine_id = m.id
-      LEFT JOIN active_ingredients ai   ON ai.id = mi.active_ingredient_id
-      WHERE ${baseWhere}
-      GROUP BY m.id, m.commercial_name, m.laboratory,
-               m.pharmaceutical_form, m.requires_prescription, m.presentations
-      ${orderBy}
-      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-    `;
+    const dataSql =
+      'SELECT m.id, m.commercial_name, m.laboratory, m.pharmaceutical_form,' +
+      ' m.requires_prescription, m.presentations,' +
+      ' array_agg(DISTINCT ai.id) AS active_ingredient_ids,' +
+      ' array_agg(DISTINCT ai.name) AS active_ingredient_names,' +
+      ' array_agg(ai.synonyms) AS active_ingredient_synonyms' +
+      ' FROM medicines m' +
+      ' JOIN medicine_ingredients mi ON mi.medicine_id = m.id' +
+      ' JOIN active_ingredients ai ON ai.id = mi.active_ingredient_id' +
+      ' WHERE ai.name_normalized ILIKE $1 ' + filterWhere +
+      ' GROUP BY m.id, m.commercial_name, m.laboratory,' +
+      ' m.pharmaceutical_form, m.requires_prescription, m.presentations' +
+      ' ' + orderBy +
+      ' LIMIT ' + limitParam + ' OFFSET ' + offsetParam;
 
     const allParams = [...params, PAGE_SIZE, offset];
 
@@ -204,45 +186,37 @@ export class MedicineRepository {
     page: number,
   ): Promise<SearchResult> {
     const normalized = normalizeText(query);
-    const term = `%${normalized}%`;
+    const term = '%' + normalized + '%';
     const offset = (page - 1) * PAGE_SIZE;
 
+    // $1 = search term; filter params start at $2
     const { whereClauses, params } = buildFilterClauses(filters, [term]);
-    const searchParamIndex = 1;
-
-    const baseWhere = `
-      m.commercial_name_normalized ILIKE $${searchParamIndex}
-      ${whereClauses.length > 0 ? 'AND ' + whereClauses.join(' AND ') : ''}
-    `;
+    const filterWhere =
+      whereClauses.length > 0 ? 'AND ' + whereClauses.join(' AND ') : '';
 
     const orderBy = buildOrderBy(filters);
+    const limitParam = '$' + String(params.length + 1);
+    const offsetParam = '$' + String(params.length + 2);
 
-    const countSql = `
-      SELECT COUNT(DISTINCT m.id)::text AS count
-      FROM medicines m
-      WHERE ${baseWhere}
-    `;
+    const countSql =
+      'SELECT COUNT(DISTINCT m.id)::text AS count' +
+      ' FROM medicines m' +
+      ' WHERE m.commercial_name_normalized ILIKE $1 ' + filterWhere;
 
-    const dataSql = `
-      SELECT
-        m.id,
-        m.commercial_name,
-        m.laboratory,
-        m.pharmaceutical_form,
-        m.requires_prescription,
-        m.presentations,
-        array_agg(DISTINCT ai.id)    AS active_ingredient_ids,
-        array_agg(DISTINCT ai.name)  AS active_ingredient_names,
-        array_agg(ai.synonyms)       AS active_ingredient_synonyms
-      FROM medicines m
-      LEFT JOIN medicine_ingredients mi ON mi.medicine_id = m.id
-      LEFT JOIN active_ingredients ai   ON ai.id = mi.active_ingredient_id
-      WHERE ${baseWhere}
-      GROUP BY m.id, m.commercial_name, m.laboratory,
-               m.pharmaceutical_form, m.requires_prescription, m.presentations
-      ${orderBy}
-      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-    `;
+    const dataSql =
+      'SELECT m.id, m.commercial_name, m.laboratory, m.pharmaceutical_form,' +
+      ' m.requires_prescription, m.presentations,' +
+      ' array_agg(DISTINCT ai.id) AS active_ingredient_ids,' +
+      ' array_agg(DISTINCT ai.name) AS active_ingredient_names,' +
+      ' array_agg(ai.synonyms) AS active_ingredient_synonyms' +
+      ' FROM medicines m' +
+      ' LEFT JOIN medicine_ingredients mi ON mi.medicine_id = m.id' +
+      ' LEFT JOIN active_ingredients ai ON ai.id = mi.active_ingredient_id' +
+      ' WHERE m.commercial_name_normalized ILIKE $1 ' + filterWhere +
+      ' GROUP BY m.id, m.commercial_name, m.laboratory,' +
+      ' m.pharmaceutical_form, m.requires_prescription, m.presentations' +
+      ' ' + orderBy +
+      ' LIMIT ' + limitParam + ' OFFSET ' + offsetParam;
 
     const allParams = [...params, PAGE_SIZE, offset];
 
@@ -275,26 +249,18 @@ export class MedicineRepository {
    */
   async getSuggestions(query: string, type: 'active' | 'commercial'): Promise<string[]> {
     const normalized = normalizeText(query);
-    const term = `%${normalized}%`;
+    const term = '%' + normalized + '%';
 
     let sql: string;
 
     if (type === 'active') {
-      sql = `
-        SELECT DISTINCT name
-        FROM active_ingredients
-        WHERE name_normalized ILIKE $1
-        ORDER BY name ASC
-        LIMIT 10
-      `;
+      sql =
+        'SELECT DISTINCT name FROM active_ingredients' +
+        ' WHERE name_normalized ILIKE $1 ORDER BY name ASC LIMIT 10';
     } else {
-      sql = `
-        SELECT DISTINCT commercial_name AS name
-        FROM medicines
-        WHERE commercial_name_normalized ILIKE $1
-        ORDER BY name ASC
-        LIMIT 10
-      `;
+      sql =
+        'SELECT DISTINCT commercial_name AS name FROM medicines' +
+        ' WHERE commercial_name_normalized ILIKE $1 ORDER BY name ASC LIMIT 10';
     }
 
     const result = await this.pool.query<{ name: string }>(sql, [term]);
@@ -312,24 +278,18 @@ export class MedicineRepository {
    * @returns The Medicine or null if not found
    */
   async findById(id: string): Promise<Medicine | null> {
-    const sql = `
-      SELECT
-        m.id,
-        m.commercial_name,
-        m.laboratory,
-        m.pharmaceutical_form,
-        m.requires_prescription,
-        m.presentations,
-        array_agg(DISTINCT ai.id)    AS active_ingredient_ids,
-        array_agg(DISTINCT ai.name)  AS active_ingredient_names,
-        array_agg(ai.synonyms)       AS active_ingredient_synonyms
-      FROM medicines m
-      LEFT JOIN medicine_ingredients mi ON mi.medicine_id = m.id
-      LEFT JOIN active_ingredients ai   ON ai.id = mi.active_ingredient_id
-      WHERE m.id = $1
-      GROUP BY m.id, m.commercial_name, m.laboratory,
-               m.pharmaceutical_form, m.requires_prescription, m.presentations
-    `;
+    const sql =
+      'SELECT m.id, m.commercial_name, m.laboratory, m.pharmaceutical_form,' +
+      ' m.requires_prescription, m.presentations,' +
+      ' array_agg(DISTINCT ai.id) AS active_ingredient_ids,' +
+      ' array_agg(DISTINCT ai.name) AS active_ingredient_names,' +
+      ' array_agg(ai.synonyms) AS active_ingredient_synonyms' +
+      ' FROM medicines m' +
+      ' LEFT JOIN medicine_ingredients mi ON mi.medicine_id = m.id' +
+      ' LEFT JOIN active_ingredients ai ON ai.id = mi.active_ingredient_id' +
+      ' WHERE m.id = $1' +
+      ' GROUP BY m.id, m.commercial_name, m.laboratory,' +
+      ' m.pharmaceutical_form, m.requires_prescription, m.presentations';
 
     const result = await this.pool.query<MedicineWithIngredientsRow>(sql, [id]);
 
@@ -356,10 +316,6 @@ export class MedicineRepository {
  *
  * @param filters       - The filter state from the caller
  * @param initialParams - Parameters already bound (e.g. the search term)
- *
- * @returns An object with:
- *   - `whereClauses`: array of SQL condition strings (e.g. `"m.laboratory = $2"`)
- *   - `params`:       full parameter array including `initialParams` + filter values
  */
 function buildFilterClauses(
   filters: FilterState,
@@ -370,17 +326,17 @@ function buildFilterClauses(
 
   if (filters.laboratory != null && filters.laboratory !== '') {
     params.push(filters.laboratory);
-    whereClauses.push(`m.laboratory = $${params.length}`);
+    whereClauses.push('m.laboratory = $' + String(params.length));
   }
 
   if (filters.pharmaceuticalForm != null && filters.pharmaceuticalForm !== '') {
     params.push(filters.pharmaceuticalForm);
-    whereClauses.push(`m.pharmaceutical_form = $${params.length}`);
+    whereClauses.push('m.pharmaceutical_form = $' + String(params.length));
   }
 
   if (filters.requiresPrescription != null) {
     params.push(filters.requiresPrescription);
-    whereClauses.push(`m.requires_prescription = $${params.length}`);
+    whereClauses.push('m.requires_prescription = $' + String(params.length));
   }
 
   return { whereClauses, params };

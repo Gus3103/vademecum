@@ -3,12 +3,13 @@
     "name": "Vademécum",
     "slug": "vademecum",
     "version": "1.0.0",
+    "sdkVersion": "54.0.0",
     "orientation": "portrait",
     "scheme": "vademecum",
     "platforms": ["ios", "android", "web"],
     "web": {
       "bundler": "metro",
-      "output": "static",
+      "output": "single",
       "favicon": "./assets/favicon.png"
     },
     "assetBundlePatterns": ["**/*"]

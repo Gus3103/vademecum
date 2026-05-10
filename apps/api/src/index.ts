@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import medicinesRouter from './routes/medicines';
 import interactionsRouter from './routes/interactions';
+import conditionsRouter from './routes/conditions';
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
@@ -34,6 +35,7 @@ app.use(express.json());
 // Mount routers
 app.use('/api/v1/medicines', medicinesRouter);
 app.use('/api/v1/interactions', interactionsRouter);
+app.use('/api/v1/conditions', conditionsRouter);
 
 // Global error handler — must be registered last
 app.use(errorHandler);

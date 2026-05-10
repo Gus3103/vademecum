@@ -7,6 +7,7 @@ export interface ActiveIngredient {
   id: string;
   name: string;
   synonyms: string[];
+  conditions?: Condition[];  // dolencias/indicaciones terapéuticas asociadas
 }
 
 export interface Presentation {
@@ -77,4 +78,32 @@ export interface ApiError {
   code: string;
   message: string;
   details?: unknown;
+}
+
+/**
+ * Condición médica / dolencia asociada a un principio activo.
+ * Representa para qué se usa el medicamento (indicaciones terapéuticas).
+ */
+export interface Condition {
+  id: string;
+  name: string;
+  category: ConditionCategory;
+}
+
+export type ConditionCategory =
+  | 'dolor'
+  | 'infeccion'
+  | 'cardiovascular'
+  | 'digestivo'
+  | 'respiratorio'
+  | 'neurologico'
+  | 'endocrino'
+  | 'musculoesqueletico'
+  | 'dermatologico'
+  | 'otro';
+
+/** Resultado de búsqueda de medicamentos por dolencia */
+export interface ConditionSearchResult {
+  condition: Condition;
+  activeIngredients: ActiveIngredient[];
 }

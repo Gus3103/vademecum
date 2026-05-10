@@ -48,14 +48,8 @@ export async function createTestDb(): Promise<TestDb> {
     memDb.public.registerFunction({
       name: 'gen_random_uuid',
       returns: DataType.text,
-      implementation: () => {
-        // Simple UUID v4 generator
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-          const r = (Math.random() * 16) | 0;
-          const v = c === 'x' ? r : (r & 0x3) | 0x8;
-          return v.toString(16);
-        });
-      },
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      implementation: () => (require('crypto') as { randomUUID: () => string }).randomUUID(),
     });
   } catch {
     // Already registered — ignore
@@ -150,6 +144,26 @@ async function applyTestSchema(db: IMemoryDb): Promise<void> {
       )
     `);
 
+    // conditions
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS conditions (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name             TEXT NOT NULL,
+        name_normalized  TEXT NOT NULL,
+        category         TEXT NOT NULL DEFAULT 'otro',
+        created_at       TIMESTAMP DEFAULT now()
+      )
+    `);
+
+    // ingredient_conditions (N:M)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ingredient_conditions (
+        active_ingredient_id UUID REFERENCES active_ingredients(id) ON DELETE CASCADE,
+        condition_id         UUID REFERENCES conditions(id) ON DELETE CASCADE,
+        PRIMARY KEY (active_ingredient_id, condition_id)
+      )
+    `);
+
     // B-tree indexes that pg-mem supports
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_med_lab
@@ -200,23 +214,21 @@ export interface InsertMedicineParams {
 /**
  * Inserts an active ingredient into the test database.
  * Automatically computes `name_normalized`.
+ * Always generates an explicit UUID to avoid pg-mem DEFAULT caching issues.
  */
 export async function insertActiveIngredient(
   pool: Pool,
   params: InsertActiveIngredientParams,
 ): Promise<string> {
-  const { id, name, synonyms = [] } = params;
+  const { name, synonyms = [] } = params;
+  const id = params.id ?? (require('crypto') as { randomUUID: () => string }).randomUUID();
   const nameNormalized = normalizeText(name);
 
   const result = await pool.query<{ id: string }>(
-    id != null
-      ? `INSERT INTO active_ingredients (id, name, name_normalized, synonyms)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id`
-      : `INSERT INTO active_ingredients (name, name_normalized, synonyms)
-         VALUES ($1, $2, $3)
-         RETURNING id`,
-    id != null ? [id, name, nameNormalized, synonyms] : [name, nameNormalized, synonyms],
+    `INSERT INTO active_ingredients (id, name, name_normalized, synonyms)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id`,
+    [id, name, nameNormalized, synonyms],
   );
 
   const row = result.rows[0];
@@ -229,13 +241,13 @@ export async function insertActiveIngredient(
 /**
  * Inserts a medicine into the test database.
  * Automatically computes `commercial_name_normalized`.
+ * Always generates an explicit UUID to avoid pg-mem DEFAULT caching issues.
  */
 export async function insertMedicine(
   pool: Pool,
   params: InsertMedicineParams,
 ): Promise<string> {
   const {
-    id,
     commercialName,
     laboratory,
     pharmaceuticalForm,
@@ -243,38 +255,24 @@ export async function insertMedicine(
     presentations = [],
   } = params;
 
+  const id = params.id ?? (require('crypto') as { randomUUID: () => string }).randomUUID();
   const nameNormalized = normalizeText(commercialName);
 
   const result = await pool.query<{ id: string }>(
-    id != null
-      ? `INSERT INTO medicines
-           (id, commercial_name, commercial_name_normalized, laboratory,
-            pharmaceutical_form, requires_prescription, presentations)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id`
-      : `INSERT INTO medicines
-           (commercial_name, commercial_name_normalized, laboratory,
-            pharmaceutical_form, requires_prescription, presentations)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id`,
-    id != null
-      ? [
-          id,
-          commercialName,
-          nameNormalized,
-          laboratory,
-          pharmaceuticalForm,
-          requiresPrescription,
-          JSON.stringify(presentations),
-        ]
-      : [
-          commercialName,
-          nameNormalized,
-          laboratory,
-          pharmaceuticalForm,
-          requiresPrescription,
-          JSON.stringify(presentations),
-        ],
+    `INSERT INTO medicines
+       (id, commercial_name, commercial_name_normalized, laboratory,
+        pharmaceutical_form, requires_prescription, presentations)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id`,
+    [
+      id,
+      commercialName,
+      nameNormalized,
+      laboratory,
+      pharmaceuticalForm,
+      requiresPrescription,
+      JSON.stringify(presentations),
+    ],
   );
 
   const row = result.rows[0];
@@ -297,5 +295,54 @@ export async function linkMedicineIngredient(
      VALUES ($1, $2)
      ON CONFLICT DO NOTHING`,
     [medicineId, activeIngredientId],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Condition helpers
+// ---------------------------------------------------------------------------
+
+export interface InsertConditionParams {
+  id?: string;
+  name: string;
+  category?: string;
+}
+
+/**
+ * Inserts a condition into the test database.
+ */
+export async function insertCondition(
+  pool: Pool,
+  params: InsertConditionParams,
+): Promise<string> {
+  const id = params.id ?? (require('crypto') as { randomUUID: () => string }).randomUUID();
+  const nameNormalized = normalizeText(params.name);
+  const category = params.category ?? 'otro';
+
+  const result = await pool.query<{ id: string }>(
+    `INSERT INTO conditions (id, name, name_normalized, category)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id`,
+    [id, params.name, nameNormalized, category],
+  );
+
+  const row = result.rows[0];
+  if (row == null) throw new Error('Insert condition returned no rows');
+  return row.id;
+}
+
+/**
+ * Links an active ingredient to a condition.
+ */
+export async function linkIngredientCondition(
+  pool: Pool,
+  ingredientId: string,
+  conditionId: string,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO ingredient_conditions (active_ingredient_id, condition_id)
+     VALUES ($1, $2)
+     ON CONFLICT DO NOTHING`,
+    [ingredientId, conditionId],
   );
 }

@@ -1,13 +1,7 @@
 /**
- * SearchScreen — Pantalla principal de búsqueda.
- *
- * - Integra SearchBar con searchStore
- * - Muestra banner de sin conexión cuando !isConnected
- * - Permite alternar entre búsqueda por principio activo y nombre comercial
- * - Al confirmar búsqueda: llama al servicio, actualiza el store y navega a ResultsScreen
- * - Registra la consulta en historyService
- *
- * Requisitos: 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 7.5
+ * SearchScreen — pantalla principal rediseñada.
+ * Incluye búsqueda por principio activo, nombre comercial y dolencia.
+ * Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 7.5
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -18,18 +12,28 @@ import {
   ActivityIndicator,
   StyleSheet,
   SafeAreaView,
+  ScrollView,
 } from 'react-native';
 import { SearchBar } from '../components/SearchBar';
 import { useSearchStore } from '../store/searchStore';
 import { searchByActiveIngredient, searchByCommercialName } from '../services/searchService';
 import { historyService } from '../services/historyService';
 import { getIsConnected, subscribeToConnectivity } from '../services/connectivityService';
+import { Colors, Spacing, Radius, Typography, Shadow } from '../theme';
+import { supabase } from '../services/supabaseClient';
+import type { Condition } from '@drug-medicine-lookup/shared';
 
 interface SearchScreenProps {
   navigation: any;
 }
 
-type SearchType = 'active' | 'commercial';
+type SearchType = 'active' | 'commercial' | 'condition';
+
+const SEARCH_TYPES: { key: SearchType; label: string; emoji: string; placeholder: string }[] = [
+  { key: 'active',     label: 'Principio activo', emoji: '🔬', placeholder: 'Ej: ibuprofeno, amoxicilina...' },
+  { key: 'commercial', label: 'Nombre comercial',  emoji: '🏷️', placeholder: 'Ej: Advil, Amoxil...' },
+  { key: 'condition',  label: 'Dolencia',          emoji: '🩺', placeholder: 'Ej: dolor, fiebre, diabetes...' },
+];
 
 export function SearchScreen({ navigation }: SearchScreenProps) {
   const { query, setQuery, setResults, setLoading, setError, isLoading, error, setCurrentPage } =
@@ -37,14 +41,31 @@ export function SearchScreen({ navigation }: SearchScreenProps) {
 
   const [searchType, setSearchType] = useState<SearchType>('active');
   const [isConnected, setIsConnected] = useState<boolean>(getIsConnected());
+  const [conditions, setConditions] = useState<Condition[]>([]);
+  const [conditionsLoading, setConditionsLoading] = useState(false);
 
-  // Subscribe to connectivity changes
   useEffect(() => {
-    const unsubscribe = subscribeToConnectivity((connected) => {
-      setIsConnected(connected);
-    });
+    const unsubscribe = subscribeToConnectivity(setIsConnected);
     return unsubscribe;
   }, []);
+
+  // Load all conditions for the condition browser
+  useEffect(() => {
+    if (searchType !== 'condition') return;
+    setConditionsLoading(true);
+    void (async () => {
+      try {
+        const { data } = await supabase
+          .from('conditions')
+          .select('id, name, category')
+          .order('category')
+          .order('name');
+        setConditions((data ?? []) as Condition[]);
+      } finally {
+        setConditionsLoading(false);
+      }
+    })();
+  }, [searchType]);
 
   const handleSearch = useCallback(
     async (searchQuery: string) => {
@@ -53,9 +74,8 @@ export function SearchScreen({ navigation }: SearchScreenProps) {
         setError('Ingrese al menos 3 caracteres para buscar.');
         return;
       }
-
       if (!isConnected) {
-        setError('Sin conexión a internet. Verifique su conexión e intente nuevamente.');
+        setError('Sin conexión a internet.');
         return;
       }
 
@@ -64,26 +84,38 @@ export function SearchScreen({ navigation }: SearchScreenProps) {
       setCurrentPage(1);
 
       try {
-        const result =
-          searchType === 'active'
-            ? await searchByActiveIngredient(trimmed)
-            : await searchByCommercialName(trimmed);
+        if (searchType === 'condition') {
+          const { data: found } = await supabase
+            .from('conditions')
+            .select('id, name, category')
+            .ilike('name_normalized', `%${trimmed.toLowerCase()}%`)
+            .limit(5);
+          const foundList = (found ?? []) as Array<{ id: string; name: string }>;
+          if (foundList.length === 0) {
+            setError('No se encontraron dolencias con ese término.');
+            setLoading(false);
+            return;
+          }
+          const first = foundList[0]!;
+          navigation.navigate('ConditionResults', { conditionId: first.id, conditionName: first.name });
+          setLoading(false);
+          return;
+        }
+
+        const result = searchType === 'active'
+          ? await searchByActiveIngredient(trimmed)
+          : await searchByCommercialName(trimmed);
 
         setResults(result);
-
-        // Save to history
         await historyService.addEntry({
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
           query: trimmed,
           type: searchType === 'active' ? 'active_ingredient' : 'commercial_name',
           timestamp: Date.now(),
         });
-
         navigation.navigate('Results');
       } catch (err: unknown) {
-        const message =
-          err instanceof Error ? err.message : 'Error al realizar la búsqueda. Intente nuevamente.';
-        setError(message);
+        setError(err instanceof Error ? err.message : 'Error al buscar. Intente nuevamente.');
       } finally {
         setLoading(false);
       }
@@ -91,203 +123,260 @@ export function SearchScreen({ navigation }: SearchScreenProps) {
     [isConnected, searchType, setLoading, setError, setResults, setCurrentPage, navigation],
   );
 
+  const handleConditionPress = useCallback(
+    (condition: Condition) => {
+      navigation.navigate('ConditionResults', { conditionId: condition.id, conditionName: condition.name });
+    },
+    [navigation],
+  );
+
+  const currentType = SEARCH_TYPES.find((t) => t.key === searchType)!;
+
+  // Group conditions by category for the browser
+  const conditionsByCategory = conditions.reduce<Record<string, Condition[]>>((acc, c) => {
+    const list = acc[c.category] ?? [];
+    list.push(c);
+    acc[c.category] = list;
+    return acc;
+  }, {});
+
+  const CATEGORY_LABELS: Record<string, string> = {
+    dolor: '😣 Dolor',
+    infeccion: '🦠 Infección',
+    cardiovascular: '❤️ Cardiovascular',
+    digestivo: '🫃 Digestivo',
+    respiratorio: '🫁 Respiratorio',
+    neurologico: '🧠 Neurológico',
+    endocrino: '⚗️ Endocrino',
+    musculoesqueletico: '🦴 Músculo-esquelético',
+    dermatologico: '🩹 Dermatológico',
+    otro: '💊 Otros',
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         {/* Offline banner */}
         {!isConnected && (
-          <View
-            style={styles.offlineBanner}
-            accessibilityRole="alert"
-            accessibilityLabel="Sin conexión a internet"
-          >
-            <Text style={styles.offlineBannerText}>
-              Sin conexión a internet. Se requiere conexión para realizar consultas.
-            </Text>
+          <View style={styles.offlineBanner} accessibilityRole="alert">
+            <Text style={styles.offlineText}>📡 Sin conexión — se requiere internet para buscar</Text>
           </View>
         )}
 
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>Consulta de Medicamentos</Text>
-          <Text style={styles.subtitle}>Busque por principio activo o nombre comercial</Text>
+        {/* Hero header */}
+        <View style={styles.hero}>
+          <Text style={styles.heroEmoji}>💊</Text>
+          <Text style={styles.heroTitle}>Vademécum</Text>
+          <Text style={styles.heroSubtitle}>Consulta de medicamentos</Text>
         </View>
 
-        {/* Search type toggle */}
-        <View style={styles.typeToggleContainer} accessibilityRole="radiogroup">
-          <TouchableOpacity
-            style={[styles.typeButton, searchType === 'active' && styles.typeButtonActive]}
-            onPress={() => setSearchType('active')}
-            accessibilityRole="radio"
-            accessibilityLabel="Buscar por principio activo"
-            accessibilityState={{ checked: searchType === 'active' }}
-          >
-            <Text
-              style={[styles.typeButtonText, searchType === 'active' && styles.typeButtonTextActive]}
+        {/* Search type selector */}
+        <View style={styles.typeSelector}>
+          {SEARCH_TYPES.map((t) => (
+            <TouchableOpacity
+              key={t.key}
+              style={[styles.typeChip, searchType === t.key && styles.typeChipActive]}
+              onPress={() => { setSearchType(t.key); setQuery(''); setError(null); }}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: searchType === t.key }}
+              accessibilityLabel={t.label}
             >
-              Principio activo
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.typeButton, searchType === 'commercial' && styles.typeButtonActive]}
-            onPress={() => setSearchType('commercial')}
-            accessibilityRole="radio"
-            accessibilityLabel="Buscar por nombre comercial"
-            accessibilityState={{ checked: searchType === 'commercial' }}
-          >
-            <Text
-              style={[
-                styles.typeButtonText,
-                searchType === 'commercial' && styles.typeButtonTextActive,
-              ]}
-            >
-              Nombre comercial
-            </Text>
-          </TouchableOpacity>
+              <Text style={styles.typeChipEmoji}>{t.emoji}</Text>
+              <Text style={[styles.typeChipLabel, searchType === t.key && styles.typeChipLabelActive]}>
+                {t.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
         {/* Search bar */}
-        <View style={styles.searchBarContainer}>
+        <View style={styles.searchContainer}>
           <SearchBar
             value={query}
             onChangeText={setQuery}
             onSubmit={handleSearch}
-            type={searchType}
-            placeholder={
-              searchType === 'active'
-                ? 'Ej: ibuprofeno, amoxicilina...'
-                : 'Ej: Advil, Amoxil...'
-            }
+            type={searchType === 'condition' ? 'active' : searchType}
+            placeholder={currentType.placeholder}
           />
         </View>
 
-        {/* Loading indicator */}
+        {/* Loading */}
         {isLoading && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator
-              size="large"
-              color="#1A73E8"
-              accessibilityLabel="Buscando medicamentos..."
-            />
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" color={Colors.primary} />
             <Text style={styles.loadingText}>Buscando...</Text>
           </View>
         )}
 
-        {/* Error message */}
+        {/* Error */}
         {error !== null && !isLoading && (
-          <View
-            style={styles.errorContainer}
-            accessibilityRole="alert"
-            accessibilityLabel={error}
-          >
-            <Text style={styles.errorText}>{error}</Text>
+          <View style={styles.errorBox} accessibilityRole="alert">
+            <Text style={styles.errorText}>⚠️ {error}</Text>
           </View>
         )}
 
-        {/* Search hint */}
-        {!isLoading && error === null && (
-          <Text style={styles.hint}>
-            Ingrese al menos 3 caracteres para ver sugerencias
-          </Text>
+        {/* Condition browser */}
+        {searchType === 'condition' && !isLoading && (
+          <View style={styles.conditionBrowser}>
+            <Text style={styles.sectionTitle}>Explorar por dolencia</Text>
+            {conditionsLoading ? (
+              <ActivityIndicator color={Colors.primary} />
+            ) : (
+              Object.entries(conditionsByCategory).map(([cat, items]) => (
+                <View key={cat} style={styles.categoryGroup}>
+                  <Text style={styles.categoryLabel}>{CATEGORY_LABELS[cat] ?? cat}</Text>
+                  <View style={styles.conditionChips}>
+                    {items.map((c) => (
+                      <TouchableOpacity
+                        key={c.id}
+                        style={styles.conditionChip}
+                        onPress={() => handleConditionPress(c)}
+                        accessibilityRole="button"
+                        accessibilityLabel={c.name}
+                      >
+                        <Text style={styles.conditionChipText}>{c.name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
         )}
-      </View>
+
+        {/* Quick access */}
+        {searchType !== 'condition' && !isLoading && error === null && (
+          <View style={styles.quickAccess}>
+            <Text style={styles.sectionTitle}>Búsquedas frecuentes</Text>
+            <View style={styles.quickChips}>
+              {['Ibuprofeno', 'Paracetamol', 'Amoxicilina', 'Omeprazol', 'Atorvastatina'].map((term) => (
+                <TouchableOpacity
+                  key={term}
+                  style={styles.quickChip}
+                  onPress={() => { setQuery(term); handleSearch(term); }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Buscar ${term}`}
+                >
+                  <Text style={styles.quickChipText}>{term}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#F8F9FA',
-  },
-  container: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-  },
+  safeArea: { flex: 1, backgroundColor: Colors.background },
+  scroll: { flex: 1 },
+  scrollContent: { paddingBottom: Spacing.xxl },
+
   offlineBanner: {
-    backgroundColor: '#D32F2F',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
+    backgroundColor: Colors.danger,
+    padding: Spacing.sm,
+    margin: Spacing.md,
+    borderRadius: Radius.md,
   },
-  offlineBannerText: {
-    color: '#FFF',
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'center',
+  offlineText: { color: Colors.white, textAlign: 'center', fontWeight: '600', fontSize: 13 },
+
+  hero: {
+    alignItems: 'center',
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.lg,
   },
-  header: {
-    marginBottom: 24,
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#1A1A2E',
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: '#666',
-  },
-  typeToggleContainer: {
+  heroEmoji: { fontSize: 56, marginBottom: Spacing.sm },
+  heroTitle: { ...Typography.h1, color: Colors.primary, marginBottom: 4 },
+  heroSubtitle: { ...Typography.body, color: Colors.textSecondary },
+
+  typeSelector: {
     flexDirection: 'row',
-    marginBottom: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#DDD',
-    overflow: 'hidden',
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+    gap: Spacing.xs,
   },
-  typeButton: {
+  typeChip: {
     flex: 1,
-    paddingVertical: 10,
     alignItems: 'center',
-    backgroundColor: '#FFF',
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.xs,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surface,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    gap: 2,
+    ...Shadow.sm,
   },
-  typeButtonActive: {
-    backgroundColor: '#1A73E8',
+  typeChipActive: {
+    backgroundColor: Colors.primaryLight,
+    borderColor: Colors.primary,
   },
-  typeButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#555',
-  },
-  typeButtonTextActive: {
-    color: '#FFF',
-  },
-  searchBarContainer: {
-    marginBottom: 16,
-    zIndex: 10,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    marginTop: 32,
-    gap: 12,
-  },
-  loadingText: {
-    fontSize: 15,
-    color: '#666',
-  },
-  errorContainer: {
-    backgroundColor: '#FFEBEE',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 8,
+  typeChipEmoji: { fontSize: 20 },
+  typeChipLabel: { fontSize: 11, fontWeight: '600', color: Colors.textSecondary, textAlign: 'center' },
+  typeChipLabelActive: { color: Colors.primary },
+
+  searchContainer: { marginHorizontal: Spacing.md, marginBottom: Spacing.md, zIndex: 10 },
+
+  centered: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.sm },
+  loadingText: { ...Typography.body, color: Colors.textSecondary },
+
+  errorBox: {
+    backgroundColor: Colors.dangerLight,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginHorizontal: Spacing.md,
     borderWidth: 1,
     borderColor: '#FFCDD2',
   },
-  errorText: {
-    color: '#C62828',
-    fontSize: 14,
-    textAlign: 'center',
+  errorText: { color: Colors.danger, fontSize: 14, textAlign: 'center' },
+
+  sectionTitle: { ...Typography.h4, marginBottom: Spacing.sm, marginHorizontal: Spacing.md },
+
+  conditionBrowser: { marginTop: Spacing.md },
+  categoryGroup: { marginBottom: Spacing.md },
+  categoryLabel: {
+    ...Typography.label,
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.xs,
+    color: Colors.textMuted,
   },
-  hint: {
-    fontSize: 13,
-    color: '#999',
-    textAlign: 'center',
-    marginTop: 8,
+  conditionChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: Spacing.md,
+    gap: Spacing.xs,
   },
+  conditionChip: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  conditionChipText: { fontSize: 13, color: Colors.textPrimary, fontWeight: '500' },
+
+  quickAccess: { marginTop: Spacing.lg },
+  quickChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: Spacing.md,
+    gap: Spacing.xs,
+  },
+  quickChip: {
+    backgroundColor: Colors.primaryLight,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  quickChipText: { fontSize: 13, color: Colors.primary, fontWeight: '600' },
 });
 
 export default SearchScreen;
