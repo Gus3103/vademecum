@@ -1,72 +1,68 @@
 /**
- * interactionService — llama directo a Supabase.
+ * interactionService — usa Supabase REST API directamente.
  * Requirements: 4.1, 4.2, 4.3, 4.4
  */
 
-import { supabase } from './supabaseClient';
+import { supabaseQuery } from './supabaseClient';
 import type { InteractionResult, DrugInteraction } from '@drug-medicine-lookup/shared';
 
 const RECOMMENDED_LIMIT = 5;
 
-interface IngredientData {
-  id: string;
-  name: string;
-  synonyms: string[] | null;
-}
+interface IngredientLinkRow { active_ingredient_id: string; }
 
 interface InteractionRow {
+  ingredient_a_id: string;
+  ingredient_b_id: string;
   severity: 'leve' | 'moderada' | 'grave';
   description: string;
-  ingredient_a: IngredientData | IngredientData[] | null;
-  ingredient_b: IngredientData | IngredientData[] | null;
 }
 
-function toIngredient(raw: IngredientData | IngredientData[] | null) {
-  const ai = Array.isArray(raw) ? raw[0] : raw;
-  if (!ai) return null;
-  return { id: ai.id, name: ai.name, synonyms: ai.synonyms ?? [] };
-}
+interface IngredientRow { id: string; name: string; synonyms: string[] | null; }
 
 export async function checkInteractions(medicineIds: string[]): Promise<InteractionResult> {
   const exceedsRecommendedLimit = medicineIds.length > RECOMMENDED_LIMIT;
 
-  // Get active ingredient IDs for all selected medicines
-  const { data: linkData } = await supabase
-    .from('medicine_ingredients')
-    .select('active_ingredient_id')
-    .in('medicine_id', medicineIds);
+  const { data: links } = await supabaseQuery<IngredientLinkRow>('medicine_ingredients', {
+    select: 'active_ingredient_id',
+    filters: [`medicine_id=in.(${medicineIds.join(',')})`],
+  });
 
-  const ingredientIds = [
-    ...new Set(
-      ((linkData ?? []) as Array<{ active_ingredient_id: string }>).map((r) => r.active_ingredient_id),
-    ),
-  ];
-
+  const ingredientIds = [...new Set(links.map((r) => r.active_ingredient_id))];
   if (ingredientIds.length === 0) {
     return { interactions: [], hasInteractions: false, exceedsRecommendedLimit };
   }
 
-  const { data, error } = await supabase
-    .from('drug_interactions')
-    .select(`
-      severity,
-      description,
-      ingredient_a:active_ingredients!ingredient_a_id(id, name, synonyms),
-      ingredient_b:active_ingredients!ingredient_b_id(id, name, synonyms)
-    `)
-    .or(`ingredient_a_id.in.(${ingredientIds.join(',')}),ingredient_b_id.in.(${ingredientIds.join(',')})`);
+  const idList = ingredientIds.join(',');
 
-  if (error) throw new Error(error.message);
+  const { data: rows } = await supabaseQuery<InteractionRow>('drug_interactions', {
+    select: 'ingredient_a_id,ingredient_b_id,severity,description',
+    filters: [`or=(ingredient_a_id.in.(${idList}),ingredient_b_id.in.(${idList}))`],
+  });
+
+  if (rows.length === 0) {
+    return { interactions: [], hasInteractions: false, exceedsRecommendedLimit };
+  }
+
+  // Fetch all involved ingredient details
+  const allIds = [...new Set(rows.flatMap((r) => [r.ingredient_a_id, r.ingredient_b_id]))];
+  const { data: ingredients } = await supabaseQuery<IngredientRow>('active_ingredients', {
+    select: 'id,name,synonyms',
+    filters: [`id=in.(${allIds.join(',')})`],
+  });
+
+  const byId = new Map(ingredients.map((ai) => [ai.id, ai]));
 
   const interactions: DrugInteraction[] = [];
-
-  for (const row of (data ?? []) as unknown as InteractionRow[]) {
-    const aiA = toIngredient(row.ingredient_a);
-    const aiB = toIngredient(row.ingredient_b);
+  for (const row of rows) {
+    const aiA = byId.get(row.ingredient_a_id);
+    const aiB = byId.get(row.ingredient_b_id);
     if (!aiA || !aiB) continue;
 
-    interactions.push({ ingredientA: aiA, ingredientB: aiB, severity: row.severity, description: row.description });
-    interactions.push({ ingredientA: aiB, ingredientB: aiA, severity: row.severity, description: row.description });
+    const ingA = { id: aiA.id, name: aiA.name, synonyms: aiA.synonyms ?? [] };
+    const ingB = { id: aiB.id, name: aiB.name, synonyms: aiB.synonyms ?? [] };
+
+    interactions.push({ ingredientA: ingA, ingredientB: ingB, severity: row.severity, description: row.description });
+    interactions.push({ ingredientA: ingB, ingredientB: ingA, severity: row.severity, description: row.description });
   }
 
   return { interactions, hasInteractions: interactions.length > 0, exceedsRecommendedLimit };

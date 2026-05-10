@@ -14,7 +14,7 @@ import {
   SafeAreaView,
 } from 'react-native';
 import { Colors, Spacing, Radius, Typography, Shadow } from '../theme';
-import { supabase } from '../services/supabaseClient';
+import { supabaseQuery } from '../services/supabaseClient';
 import { searchByActiveIngredient } from '../services/searchService';
 import { useSearchStore } from '../store/searchStore';
 import type { ActiveIngredient, ConditionSearchResult } from '@drug-medicine-lookup/shared';
@@ -35,19 +35,28 @@ export function ConditionResultsScreen({ navigation, route }: ConditionResultsSc
   useEffect(() => {
     void (async () => {
       try {
-        const { data, error } = await supabase
-          .from('ingredient_conditions')
-          .select('active_ingredients(id, name, synonyms)')
-          .eq('condition_id', conditionId);
+        const { data: links } = await supabaseQuery<{ active_ingredient_id: string }>('ingredient_conditions', {
+          select: 'active_ingredient_id',
+          filters: [`condition_id=eq.${conditionId}`],
+        });
 
-        if (error || !data) { setLocalError('No se pudo cargar la información.'); return; }
+        const ids = links.map((l) => l.active_ingredient_id);
+        if (ids.length === 0) {
+          setData({ condition: { id: conditionId, name: conditionName, category: 'otro' }, activeIngredients: [] });
+          return;
+        }
 
-        const ingredients: ActiveIngredient[] = (data as unknown as Array<{
-          active_ingredients: { id: string; name: string; synonyms: string[] | null } | null;
-        }>)
-          .map((r) => r.active_ingredients)
-          .filter((ai): ai is { id: string; name: string; synonyms: string[] | null } => ai !== null)
-          .map((ai) => ({ id: ai.id, name: ai.name, synonyms: ai.synonyms ?? [] }));
+        const { data: aiData } = await supabaseQuery<{ id: string; name: string; synonyms: string[] | null }>('active_ingredients', {
+          select: 'id,name,synonyms',
+          filters: [`id=in.(${ids.join(',')})`],
+          order: 'name.asc',
+        });
+
+        const ingredients: ActiveIngredient[] = aiData.map((ai) => ({
+          id: ai.id,
+          name: ai.name,
+          synonyms: ai.synonyms ?? [],
+        }));
 
         setData({ condition: { id: conditionId, name: conditionName, category: 'otro' }, activeIngredients: ingredients });
       } catch {

@@ -20,7 +20,8 @@ import { searchByActiveIngredient, searchByCommercialName } from '../services/se
 import { historyService } from '../services/historyService';
 import { getIsConnected, subscribeToConnectivity } from '../services/connectivityService';
 import { Colors, Spacing, Radius, Typography, Shadow } from '../theme';
-import { supabase } from '../services/supabaseClient';
+import { supabaseQuery } from '../services/supabaseClient';
+import { normalizeText } from '@drug-medicine-lookup/shared';
 import type { Condition } from '@drug-medicine-lookup/shared';
 
 interface SearchScreenProps {
@@ -55,12 +56,11 @@ export function SearchScreen({ navigation }: SearchScreenProps) {
     setConditionsLoading(true);
     void (async () => {
       try {
-        const { data } = await supabase
-          .from('conditions')
-          .select('id, name, category')
-          .order('category')
-          .order('name');
-        setConditions((data ?? []) as Condition[]);
+        const { data } = await supabaseQuery<Condition>('conditions', {
+          select: 'id,name,category',
+          order: 'category.asc,name.asc',
+        });
+        setConditions(data);
       } finally {
         setConditionsLoading(false);
       }
@@ -85,18 +85,17 @@ export function SearchScreen({ navigation }: SearchScreenProps) {
 
       try {
         if (searchType === 'condition') {
-          const { data: found } = await supabase
-            .from('conditions')
-            .select('id, name, category')
-            .ilike('name_normalized', `%${trimmed.toLowerCase()}%`)
-            .limit(5);
-          const foundList = (found ?? []) as Array<{ id: string; name: string }>;
-          if (foundList.length === 0) {
+          const { data: found } = await supabaseQuery<{ id: string; name: string }>('conditions', {
+            select: 'id,name',
+            filters: [`name_normalized=ilike.*${normalizeText(trimmed)}*`],
+            limit: 5,
+          });
+          if (found.length === 0) {
             setError('No se encontraron dolencias con ese término.');
             setLoading(false);
             return;
           }
-          const first = foundList[0]!;
+          const first = found[0]!;
           navigation.navigate('ConditionResults', { conditionId: first.id, conditionName: first.name });
           setLoading(false);
           return;

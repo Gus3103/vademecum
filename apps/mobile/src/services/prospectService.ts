@@ -1,19 +1,30 @@
 /**
- * prospectService — llama directo a Supabase.
+ * prospectService — usa Supabase REST API directamente.
  * Requirements: 3.1, 3.2, 3.3
  */
 
-import { supabase } from './supabaseClient';
+import { supabaseQuerySingle } from './supabaseClient';
 import type { Prospect } from '@drug-medicine-lookup/shared';
 
-export async function getProspect(medicineId: string): Promise<Prospect> {
-  const { data, error } = await supabase
-    .from('prospects')
-    .select('*')
-    .eq('medicine_id', medicineId)
-    .single();
+interface ProspectRow {
+  medicine_id: string;
+  indications: string | null;
+  dosage: string | null;
+  contraindications: string | null;
+  warnings: string | null;
+  interactions_text: string | null;
+  adverse_effects: string | null;
+  overdose: string | null;
+  storage: string | null;
+}
 
-  if (error || !data) {
+export async function getProspect(medicineId: string): Promise<Prospect> {
+  const data = await supabaseQuerySingle<ProspectRow>('prospects', {
+    select: 'medicine_id,indications,dosage,contraindications,warnings,interactions_text,adverse_effects,overdose,storage',
+    filters: [`medicine_id=eq.${medicineId}`],
+  });
+
+  if (!data) {
     throw new Error('PROSPECT_NOT_FOUND');
   }
 

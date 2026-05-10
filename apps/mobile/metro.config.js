@@ -23,4 +23,8 @@ config.resolver.extraNodeModules = {
   '@drug-medicine-lookup/shared': path.resolve(workspaceRoot, 'packages/shared/src'),
 };
 
+// Fix: @supabase/supabase-js uses import.meta — tell Metro to treat it as ESM
+config.resolver.unstable_enablePackageExports = true;
+config.resolver.unstable_conditionNames = ['browser', 'require', 'default'];
+
 module.exports = config;
