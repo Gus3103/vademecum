@@ -8,8 +8,7 @@
     "scheme": "vademecum",
     "platforms": ["ios", "android", "web"],
     "web": {
-      "bundler": "metro",
-      "output": "static",
+      "bundler": "webpack",
       "favicon": "./assets/favicon.png"
     },
     "assetBundlePatterns": ["**/*"]

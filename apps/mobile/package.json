@@ -8,7 +8,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build:web": "expo export -p web",
+    "build:web": "expo build:web",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
@@ -16,6 +16,7 @@
   "dependencies": {
     "@drug-medicine-lookup/shared": "*",
     "@expo/vector-icons": "14.0.0",
+    "@expo/webpack-config": "19.0.1",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@react-navigation/native": "6.1.18",
     "@react-navigation/native-stack": "6.11.0",
